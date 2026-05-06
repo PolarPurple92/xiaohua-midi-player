@@ -4,6 +4,8 @@
 许可证：MIT License
 ==================================================
 
+B站教程视频：https://www.bilibili.com/video/BV1BJRtB1Eug/?vd_source=228cb46156ca50906151b7e9528345b5
+
 [ 软件简介 ]
 本工具能够将五线谱截图自动识别为 MIDI 音乐，并立即播放。
 无需安装 Python 或任何运行环境，下载 exe 文件后双击即可使用。
