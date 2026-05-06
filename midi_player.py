@@ -5,22 +5,37 @@ import sys
 import os
 import time
 import tempfile
-import mido   # 用于调整 MIDI 速度
+import mido
 import shutil
 
+def get_midi_duration(midi_file, speed=1.0):
+    """
+    计算 MIDI 文件的总播放时长（秒），考虑速度因子。
+    返回 float 秒数，如果无法计算则返回 0。
+    """
+    try:
+        mid = mido.MidiFile(midi_file)
+        tempo = 500000  # 默认 120 BPM (微秒每四分音符)
+        ticks_per_beat = mid.ticks_per_beat
+        total_ticks = 0
+        for track in mid.tracks:
+            ticks = 0
+            for msg in track:
+                ticks += msg.time
+                if msg.type == 'set_tempo':
+                    tempo = msg.tempo
+            total_ticks = max(total_ticks, ticks)
+        # 计算总时长 (秒) = (total_ticks / ticks_per_beat) * (tempo / 1_000_000)
+        duration = (total_ticks / ticks_per_beat) * (tempo / 1_000_000)
+        return duration / speed
+    except Exception:
+        return 0.0
+
 def adjust_midi_speed(input_path, output_path, speed):
-    """
-    读取 MIDI 文件，将所有 SetTempo 事件的速度按 speed 倍率调整，
-    保存为新文件。
-    speed=1.0  => 不变
-    speed=2.0  => 快一倍（tempo 值减半）
-    speed=0.5  => 慢一倍
-    """
     mid = mido.MidiFile(input_path)
     for track in mid.tracks:
         for msg in track:
             if msg.type == 'set_tempo':
-                # tempo 单位是微秒每四分音符，速度加倍则 tempo 减半
                 msg.tempo = int(msg.tempo / speed)
     mid.save(output_path)
 
@@ -29,7 +44,7 @@ def play_midi(midi_file, sf2_file="soundfont.sf2", volume=1.0, audio_driver=None
         print(f"错误：找不到 MIDI 文件 {midi_file}")
         return
 
-    # 自动查找音色库（优先 soundfonts 文件夹，再回退根目录）
+    # 自动查找音色库
     if not os.path.exists(sf2_file):
         base = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
         sf_dir = os.path.join(base, "soundfonts")
@@ -43,7 +58,7 @@ def play_midi(midi_file, sf2_file="soundfont.sf2", volume=1.0, audio_driver=None
         print(f"错误：找不到 SoundFont 文件 {sf2_file}")
         return
 
-    # ----- 速度处理：如果 speed != 1.0，生成临时变速 MIDI -----
+    # 处理速度（非 1.0 时生成临时变速文件）
     temp_midi = None
     actual_midi_file = midi_file
     if abs(speed - 1.0) > 0.001:
@@ -56,11 +71,9 @@ def play_midi(midi_file, sf2_file="soundfont.sf2", volume=1.0, audio_driver=None
         except Exception as e:
             print(f"警告：无法调整速度，将以原速播放。错误: {e}")
             actual_midi_file = midi_file
-    # -------------------------------------------
 
+    # 初始化 FluidSynth
     fs = fluidsynth.Synth()
-
-    # 驱动选择
     drivers = ["dsound", "coreaudio", "pulseaudio", "alsa"]
     if audio_driver:
         drivers = [audio_driver] + drivers
@@ -86,18 +99,21 @@ def play_midi(midi_file, sf2_file="soundfont.sf2", volume=1.0, audio_driver=None
 
     fs.program_select(0, sfid, 0, 0)
 
-    # 设置音量
     try:
         fs.setting('synth.gain', volume)
     except:
         print("警告：设置音量失败")
 
-    print(f"正在播放 {actual_midi_file} ...")
+    # 计算预计播放时长
+    duration = get_midi_duration(actual_midi_file, speed=1.0)  # 已经在文件里改了速度，所以speed传1.0即可
+    if duration <= 0:
+        duration = 3.0  # 回退默认等待
+
+    print(f"正在播放 {actual_midi_file} (预计 {duration:.1f} 秒)...")
     fs.play_midi_file(actual_midi_file)
 
-    # 等待播放完成（通过轮询状态）
-    while fs.get_status() == fluidsynth.FLUID_PLAYER_PLAYING:
-        time.sleep(0.1)
+    # 等待音频完全输出
+    time.sleep(duration + 0.5)  # 多缓冲 0.5 秒确保播放结束
 
     fs.delete()
     print("播放结束")

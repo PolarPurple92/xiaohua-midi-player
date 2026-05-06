@@ -1,7 +1,7 @@
 # Copyright (c) 2026 饭吃完了我吃什么 (B站同名)
 # Licensed under the MIT License
 import sys, os, json, shutil, threading, time, traceback, tkinter as tk
-from tkinter import ttk, messagebox, Menu, simpledialog
+from tkinter import ttk, messagebox, Menu, simpledialog, filedialog
 from PIL import Image, ImageTk, ImageGrab
 import tkinterdnd2
 
@@ -21,6 +21,11 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(BASE_DIR, relative_path)
+
 SCREENSHOT_DIR = os.path.join(BASE_DIR, "screenshots")
 XML_DIR = os.path.join(BASE_DIR, "xml_outputs")
 MIDI_DIR = os.path.join(BASE_DIR, "midi_outputs")
@@ -35,7 +40,8 @@ def load_config():
     defaults = {
         "hotkey": DEFAULT_HOTKEY,
         "auto_play": False,
-        "sf2_name": "soundfont.sf2",
+        "sf2_folder": "",
+        "sf2_name": "",
         "volume": 1.0,
         "speed": 1.0
     }
@@ -133,7 +139,7 @@ class ScoreBrowserApp:
     def __init__(self, root):
         self.root = root
         self.root.title("小花截图MIDI播放工具")
-        self.root.geometry("950x750")
+        self.root.geometry("1200x750")
         self.root.drop_target_register(tkinterdnd2.DND_FILES)
         self.root.dnd_bind('<<Drop>>', self.on_drop)
 
@@ -146,10 +152,12 @@ class ScoreBrowserApp:
         self.status_text = tk.StringVar(value="就绪")
 
         # 窗口图标
-        icon_path = os.path.join(BASE_DIR, "icon.ico")
+        icon_path = resource_path("icon.ico")
         if os.path.exists(icon_path):
-            try: self.root.iconbitmap(icon_path)
-            except: pass
+            try:
+                self.root.iconbitmap(default=icon_path)
+            except Exception:
+                pass
 
         if HAS_KEYBOARD:
             self.register_hotkey()
@@ -162,6 +170,7 @@ class ScoreBrowserApp:
         root.config(menu=menubar)
         settings_menu = Menu(menubar, tearoff=False)
         settings_menu.add_command(label="修改截图快捷键", command=self.change_hotkey)
+        settings_menu.add_command(label="选择音色库文件夹", command=self.choose_sf2_folder)
         menubar.add_cascade(label="设置", menu=settings_menu)
         about_menu = Menu(menubar, tearoff=False)
         about_menu.add_command(label="关于作者", command=self.show_about)
@@ -177,7 +186,7 @@ class ScoreBrowserApp:
 
         # 音色库
         tk.Label(toolbar, text=" 音色:").pack(side=tk.LEFT)
-        self.sf2_var = tk.StringVar(value=self.config.get("sf2_name", "soundfont.sf2"))
+        self.sf2_var = tk.StringVar(value=self.config.get("sf2_name", ""))
         self.sf2_combo = ttk.Combobox(toolbar, textvariable=self.sf2_var, width=15, state="readonly")
         self.sf2_combo.pack(side=tk.LEFT, padx=2)
         self._update_sf2_list()
@@ -270,21 +279,80 @@ class ScoreBrowserApp:
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         self.full_refresh()
 
-    # ---------- 音色库/音量/速度/热键 ----------
+    # ---------- 音色库管理 ----------
+    def choose_sf2_folder(self):
+        folder = filedialog.askdirectory(title="请选择包含 .sf2 音色库文件的文件夹")
+        if not folder:
+            return
+        sf2_files = [f for f in os.listdir(folder) if f.lower().endswith('.sf2')]
+        if not sf2_files:
+            messagebox.showinfo("提示", "所选文件夹中没有找到 .sf2 音色库文件。")
+            return
+        sf2_files.sort()
+        self.config["sf2_folder"] = folder
+        self.config["sf2_name"] = sf2_files[0]
+        save_config(self.config)
+        self._update_sf2_list()
+        self.sf2_var.set(sf2_files[0])
+        messagebox.showinfo("成功", f"已加载 {len(sf2_files)} 个音色库。")
+
     def _update_sf2_list(self):
-        sf_dir = SOUNDFONT_DIR
-        os.makedirs(sf_dir, exist_ok=True)
-        files = [f for f in os.listdir(sf_dir) if f.lower().endswith(".sf2")]
-        if not files and os.path.exists(os.path.join(BASE_DIR, "soundfont.sf2")):
-            files.append("soundfont.sf2")
+        folder = self.config.get("sf2_folder", "")
+        if folder and os.path.isdir(folder):
+            files = [f for f in os.listdir(folder) if f.lower().endswith('.sf2')]
+        else:
+            os.makedirs(SOUNDFONT_DIR, exist_ok=True)
+            files = [f for f in os.listdir(SOUNDFONT_DIR) if f.lower().endswith('.sf2')]
+            if not files and os.path.isfile(os.path.join(BASE_DIR, "soundfont.sf2")):
+                files.append("soundfont.sf2")
         if not files:
-            files.append("soundfont.sf2")
-        self.sf2_combo['values'] = files
-        if self.sf2_var.get() not in files:
-            self.sf2_var.set(files[0])
+            self.sf2_combo['values'] = ["未配置音色库"]
+            self.sf2_var.set("未配置音色库")
+        else:
+            files.sort()
+            self.sf2_combo['values'] = files
+            if self.config.get("sf2_name", "") not in files:
+                self.config["sf2_name"] = files[0]
+                self.sf2_var.set(files[0])
+            else:
+                self.sf2_var.set(self.config["sf2_name"])
 
     def _on_sf2_change(self, event=None):
-        self.config["sf2_name"] = self.sf2_var.get()
+        new_name = self.sf2_var.get()
+        if new_name != "未配置音色库":
+            self.config["sf2_name"] = new_name
+            save_config(self.config)
+
+    def get_sf2_path(self):
+        name = self.config.get("sf2_name", "")
+        if not name or name == "未配置音色库":
+            fallback = os.path.join(SOUNDFONT_DIR, "soundfont.sf2")
+            if os.path.exists(fallback):
+                return fallback
+            return ""
+        folder = self.config.get("sf2_folder", "")
+        if folder and os.path.isdir(folder):
+            path = os.path.join(folder, name)
+            if os.path.exists(path):
+                return path
+        path = os.path.join(SOUNDFONT_DIR, name)
+        if os.path.exists(path):
+            return path
+        path = os.path.join(BASE_DIR, name)
+        if os.path.exists(path):
+            return path
+        return ""
+
+    def _check_sf2(self):
+        sf2 = self.get_sf2_path()
+        if not sf2:
+            messagebox.showwarning("缺少音色库", "未找到音色库文件，请先在菜单“设置”中“选择音色库文件夹”。")
+            return None
+        return sf2
+
+    # ---------- 其他设置 ----------
+    def _toggle_auto_play(self):
+        self.config["auto_play"] = self.auto_play_var.get()
         save_config(self.config)
 
     def _on_volume_change(self, event=None):
@@ -296,18 +364,6 @@ class ScoreBrowserApp:
         self.config["speed"] = self.speed_var.get()
         save_config(self.config)
         self.speed_label.config(text=f"{self.speed_var.get():.1f}x")
-
-    def get_sf2_path(self):
-        name = self.config.get("sf2_name", "soundfont.sf2")
-        path = os.path.join(SOUNDFONT_DIR, name)
-        if os.path.exists(path):
-            return path
-        fallback = os.path.join(BASE_DIR, name)
-        return fallback if os.path.exists(fallback) else os.path.join(BASE_DIR, "soundfont.sf2")
-
-    def _toggle_auto_play(self):
-        self.config["auto_play"] = self.auto_play_var.get()
-        save_config(self.config)
 
     def register_hotkey(self):
         try:
@@ -361,7 +417,7 @@ class ScoreBrowserApp:
     def clipboard_add(self):
         img = ImageGrab.grabclipboard()
         if img is None:
-            messagebox.showinfo("提示", "剪贴板中没有图片。\n请先截图。")
+            messagebox.showinfo("提示", "剪贴板中没有图片。\n请先使用 Win+Shift+S 截图。")
             return
         if isinstance(img, list):
             messagebox.showinfo("提示", "剪贴板中是文件列表，请截图后再试。")
@@ -457,10 +513,8 @@ class ScoreBrowserApp:
         if not musicxml_to_midi(xml_path, midi_path):
             messagebox.showerror("失败", "转换 MIDI 失败")
             return
-        sf2 = self.get_sf2_path()
-        if not os.path.exists(sf2):
-            messagebox.showwarning("缺少音色库", "未找到音色库文件")
-            return
+        sf2 = self._check_sf2()
+        if not sf2: return
         self.refresh_midi_list()
         threading.Thread(target=lambda: play_midi_file(
             midi_path, sf2, volume=self.volume_var.get(), speed=self.speed_var.get()), daemon=True).start()
@@ -495,10 +549,8 @@ class ScoreBrowserApp:
     def play_midi_file_gui(self):
         midi_path = self.get_selected_midi()
         if not midi_path: return
-        sf2 = self.get_sf2_path()
-        if not os.path.exists(sf2):
-            messagebox.showwarning("缺少音色库", "未找到音色库文件")
-            return
+        sf2 = self._check_sf2()
+        if not sf2: return
         threading.Thread(target=lambda: play_midi_file(
             midi_path, sf2, volume=self.volume_var.get(), speed=self.speed_var.get()), daemon=True).start()
 
@@ -521,7 +573,7 @@ class ScoreBrowserApp:
         left.pack_propagate(False)
         img_label = tk.Label(left)
         img_label.pack(expand=True)
-        watermark_path = os.path.join(BASE_DIR, "watermark.png")
+        watermark_path = resource_path("watermark.png")
         if os.path.exists(watermark_path):
             try:
                 img = Image.open(watermark_path).convert("RGBA")
@@ -539,6 +591,8 @@ class ScoreBrowserApp:
                 img_label.image = photo
             except Exception as e:
                 img_label.config(text="(图片加载失败)")
+        else:
+            img_label.config(text="(图片缺失)")
         right = tk.Frame(about, width=300, height=280)
         right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         right.pack_propagate(False)
@@ -555,7 +609,8 @@ class ScoreBrowserApp:
         existing_midi = os.path.join(MIDI_DIR, base_name + ".mid")
         if os.path.exists(existing_midi):
             self.status_text.set("已有 MIDI，直接播放中...")
-            sf2 = self.get_sf2_path()
+            sf2 = self._check_sf2()
+            if not sf2: return
             threading.Thread(target=play_midi_file,
                              args=(existing_midi, sf2),
                              kwargs={"volume": self.volume_var.get(), "speed": self.speed_var.get()},
@@ -576,7 +631,6 @@ class ScoreBrowserApp:
                 if not actual_xml:
                     self.root.after(0, lambda: messagebox.showerror("识别失败", "未找到生成的 MusicXML 文件。"))
                     return
-                # 移动到 XML_DIR
                 dest_name = os.path.basename(actual_xml)
                 dest = os.path.join(XML_DIR, dest_name)
                 counter = 1
@@ -586,7 +640,6 @@ class ScoreBrowserApp:
                     counter += 1
                 shutil.move(actual_xml, dest)
                 actual_xml = dest
-                # 转 MIDI
                 base_midi = os.path.splitext(dest_name)[0] + ".mid"
                 mid_output = os.path.join(MIDI_DIR, base_midi)
                 counter = 1
@@ -599,10 +652,11 @@ class ScoreBrowserApp:
                     return
                 self.root.after(0, self.refresh_xml_list)
                 self.root.after(0, self.refresh_midi_list)
-                # 播放
+
                 def play():
-                    sf2 = self.get_sf2_path()
-                    play_midi_file(mid_output, sf2, volume=self.volume_var.get(), speed=self.speed_var.get())
+                    sf2 = self._check_sf2()
+                    if sf2:
+                        play_midi_file(mid_output, sf2, volume=self.volume_var.get(), speed=self.speed_var.get())
                 self.root.after(0, lambda: threading.Thread(target=play, daemon=True).start())
             except Exception as e:
                 err = traceback.format_exc()
