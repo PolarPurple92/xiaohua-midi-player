@@ -8,8 +8,18 @@ import shutil
 import cv2
 import numpy as np
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.path.dirname(sys.executable)
-TEMP_DIR = os.path.join(BASE_DIR, "temp_audiveris")
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)      # 可写数据目录
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def resource_path(relative_path):
+    """获取打包后资源的真实路径（临时目录）"""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(BASE_DIR, relative_path)
+
+TEMP_DIR = os.path.join(BASE_DIR, "temp_audiveris")   # 可写临时目录
 
 def preprocess_image(image_path, output_path=None):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -56,10 +66,12 @@ def recognize(image_path, preprocess=True):
     else:
         preprocessed_image = image_path
 
-    # 查找 Audiveris.exe
-    audiveris_exe = os.path.join(BASE_DIR, "Audiveris", "Audiveris.exe")
+    # ---------- 严格通过 resource_path 定位 Audiveris ----------
+    audiveris_exe = resource_path(os.path.join("Audiveris", "Audiveris.exe"))
     if not os.path.exists(audiveris_exe):
-        audiveris_exe = "Audiveris"  # 尝试系统 PATH
+        print("严重错误：Audiveris 引擎未找到，请确保打包时包含 Audiveris 文件夹。")
+        shutil.rmtree(TEMP_DIR, ignore_errors=True)
+        return None
 
     print(f"[识别] 使用 Audiveris: {audiveris_exe}")
 
@@ -82,7 +94,7 @@ def recognize(image_path, preprocess=True):
         shutil.rmtree(TEMP_DIR, ignore_errors=True)
         return None
 
-    # 从 TEMP_DIR 中查找 .mxl 或 .xml 文件
+    # 查找生成的 MusicXML 文件
     xml_files = glob.glob(os.path.join(TEMP_DIR, "*.xml")) + glob.glob(os.path.join(TEMP_DIR, "*.mxl"))
     xml_files = [f for f in xml_files if not f.lower().endswith('.omr')]
 
@@ -92,12 +104,21 @@ def recognize(image_path, preprocess=True):
         return None
 
     generated = xml_files[0]
-    # 移动到 BASE_DIR 下并返回路径
     dest = os.path.join(BASE_DIR, os.path.basename(generated))
     if os.path.abspath(generated) != os.path.abspath(dest):
         shutil.move(generated, dest)
     generated = dest
-    print(f"MusicXML 已生成为: {generated}")
 
+    # 检查文件大小
+    if os.path.getsize(generated) < 100:
+        print(f"警告：生成的 MusicXML 文件过小 ({os.path.getsize(generated)} 字节)，可能识别失败。")
+        try:
+            os.remove(generated)
+        except:
+            pass
+        shutil.rmtree(TEMP_DIR, ignore_errors=True)
+        return None
+
+    print(f"MusicXML 已生成为: {generated}")
     shutil.rmtree(TEMP_DIR, ignore_errors=True)
     return generated
